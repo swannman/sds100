@@ -102,17 +102,53 @@ def test_remove_and_avoid(tmp_path):
     assert len(list(group.of("C-Freq"))) == before - 1
 
 
-def test_scanner_detect_roundtrip(tmp_path):
-    # Build a fake scanner volume and confirm detect + read_hpd work.
-    vol = tmp_path / "SDS100"
-    fav_dir = vol / scanner_mod.FAVORITES_SUBDIR
-    fav_dir.mkdir(parents=True)
-    (fav_dir / scanner_mod.INDEX_FILE).write_text("")
-    text = ("TargetModel\tBCDx36HP\r\nFormatVersion\t1.00\r\n"
+SYS_TEXT = ("TargetModel\tBCDx36HP\r\nFormatVersion\t1.00\r\n"
             "Conventional\t\t\tTest Sys\tOff\t\tConventional\tOff\tOff\t0\t"
             "Off\tOff\t400\tAuto\t8\r\n")
-    (fav_dir / "1_Test.hpd").write_text(text)
+
+
+def _fake_card(tmp_path):
+    """Build a minimal but realistic SDS100 card layout under tmp_path."""
+    fav_dir = tmp_path / "NO NAME" / scanner_mod.FAVORITES_SUBDIR
+    fav_dir.mkdir(parents=True)
+    flags = "\t".join(["Off"] * scanner_mod.N_FLIST_FLAGS)
+    (fav_dir / scanner_mod.INDEX_FILE).write_text(
+        "TargetModel\tBCDx36HP\r\nFormatVersion\t1.00\r\n"
+        f"F-List\tTest Sys\tf_000001.hpd\t{flags}\r\n", newline="")
+    (fav_dir / "f_000001.hpd").write_text(SYS_TEXT, newline="")
+    return scanner_mod.Scanner(str(tmp_path / "NO NAME"))
+
+
+def test_scanner_detect_and_index(tmp_path):
+    _fake_card(tmp_path)
     scanners = scanner_mod.detect(str(tmp_path))
     assert len(scanners) == 1
+    _, entries = scanners[0].read_index()
+    assert [e.name for e in entries] == ["Test Sys"]
     fav = scanner_mod.read_hpd(scanners[0].hpd_files()[0])
     assert fav.systems[0].name == "Test Sys"
+
+
+def test_push_overwrite_leaves_index(tmp_path):
+    s = _fake_card(tmp_path)
+    fav = scanner_mod.read_hpd(s.hpd_files()[0])
+    _, before = s.read_index()
+    res = scanner_mod.push(s, fav, "Test Sys", backup=False)
+    assert res.replaced and res.filename == "f_000001.hpd"
+    _, after = s.read_index()
+    assert len(after) == len(before)  # no new index row
+    # written .hpd carries no export signature
+    raw = open(s.hpd_files()[0], encoding="utf-8", newline="").read()
+    assert schema.named  # sanity import
+    assert "HomePatrol Export File" not in raw
+
+
+def test_push_new_appends_index(tmp_path):
+    s = _fake_card(tmp_path)
+    fav = scanner_mod.read_hpd(s.hpd_files()[0])
+    res = scanner_mod.push(s, fav, "Brand New", backup=False)
+    assert not res.replaced and res.filename == "f_000002.hpd"
+    _, after = s.read_index()
+    assert [e.name for e in after] == ["Test Sys", "Brand New"]
+    new = next(e for e in after if e.name == "Brand New")
+    assert len(new.flags) == scanner_mod.N_FLIST_FLAGS

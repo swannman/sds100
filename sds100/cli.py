@@ -351,69 +351,96 @@ def cmd_encode(args):
 def cmd_detect(args):
     scanners = scanner_mod.detect()
     if not scanners:
-        print("no scanner found. Connect the SDS100 over USB and choose "
-              "'Mass Storage' on the radio.")
+        ports = scanner_mod.serial_ports()
+        if ports:
+            print("A scanner appears to be connected in serial / PC-control "
+                  "mode (" + ", ".join(ports) + "), but its microSD card is "
+                  "not mounted as a USB drive.")
+            print("Switch the radio to Mass Storage mode (or put the microSD "
+                  "in a card reader), then re-run 'sds100 detect'.")
+        else:
+            print("no scanner found. Connect the SDS100 over USB and put it "
+                  "in Mass Storage mode (its SD card mounts as a USB drive).")
         return
     for s in scanners:
-        lists = s.hpd_files()
         print(f"scanner at {s.mount}")
         print(f"  favorites dir: {s.favorites_dir}")
-        print(f"  index        : {s.index_path}"
-              f"  ({'present' if os.path.exists(s.index_path) else 'MISSING'})")
-        print(f"  list files   : {len(lists)}")
-        for p in lists:
-            print(f"    {os.path.basename(p)}")
+        if not os.path.exists(s.index_path):
+            print(f"  index        : MISSING ({s.index_path})")
+            continue
+        _, entries = s.read_index()
+        rows = []
+        for e in entries:
+            path = os.path.join(s.favorites_dir, e.filename)
+            try:
+                fav = scanner_mod.read_hpd(path)
+                n = sum(1 for _ in fav.walk())
+            except OSError:
+                n = "?"
+            on = sum(1 for f in e.flags if f == "On")
+            rows.append([e.name, e.filename, str(n), str(on)])
+        print(table(rows, ["List", "File", "Entries", "QuickKeys"]))
+
+
+def _resolve_list(s, name):
+    """Return a (FavListEntry, path) for a list on the card, by display name
+    or filename fragment."""
+    _, entries = s.read_index()
+    if not entries:
+        _die("no favorites lists registered on the scanner")
+    match = None
+    if name:
+        for e in entries:
+            if name.lower() in e.name.lower() or name.lower() in e.filename.lower():
+                match = e
+                break
+        if match is None:
+            _die(f"no list matching {name!r}; available: "
+                 + ", ".join(e.name for e in entries))
+    elif len(entries) == 1:
+        match = entries[0]
+    else:
+        _die("multiple lists on the scanner; pass a name. Available: "
+             + ", ".join(e.name for e in entries))
+    return match, os.path.join(s.favorites_dir, match.filename)
 
 
 def cmd_pull(args):
     s = scanner_mod.require_one(mount=args.mount)
-    hpds = s.hpd_files()
-    if not hpds:
-        _die("no .hpd favorites files found on the scanner")
-    target = None
-    if args.list:
-        for p in hpds:
-            if args.list.lower() in os.path.basename(p).lower():
-                target = p
-                break
-        # also match by display name inside the file
-        if target is None:
-            for p in hpds:
-                fav = scanner_mod.read_hpd(p)
-                if fav.systems and any(args.list.lower() in sysr.name.lower()
-                                       for sysr in fav.systems):
-                    target = p
-                    break
-        if target is None:
-            _die(f"no list matching {args.list!r}; available: "
-                 + ", ".join(os.path.basename(p) for p in hpds))
-    elif len(hpds) == 1:
-        target = hpds[0]
-    else:
-        _die("multiple lists on the scanner; pass a name. Available: "
-             + ", ".join(os.path.basename(p) for p in hpds))
-
-    fav = scanner_mod.read_hpd(target)
-    out = args.output or (os.path.splitext(os.path.basename(target))[0] + ".hpe")
+    entry, path = _resolve_list(s, args.list)
+    fav = scanner_mod.read_hpd(path)
+    out = args.output or (schema_safe_filename(entry.name) + ".hpe")
     codec.write(out, fav.to_text())
-    print(f"pulled {os.path.basename(target)} -> {out}")
+    print(f"pulled {entry.name!r} ({entry.filename}) -> {out}")
+
+
+def schema_safe_filename(name: str) -> str:
+    keep = "-_. ()"
+    return "".join(c for c in name if c.isalnum() or c in keep).strip() or "list"
 
 
 def cmd_push(args):
     s = scanner_mod.require_one(mount=args.mount)
-    _load(args.file)  # validate the .hpe parses before touching the card
+    fav = _load(args.file)  # validate the .hpe parses before touching the card
     if not os.path.exists(s.index_path):
         _die(f"scanner index {scanner_mod.INDEX_FILE} not found at "
-             f"{s.index_path}; cannot safely register a new list.")
-    print("NOTE: pushing favorites to the card updates the f_list.cfg index, "
-          "whose exact format has not yet been confirmed against a physical "
-          "SDS100. To avoid corrupting the scanner's list menu, push is held "
-          "until verified.")
-    print(f"  target : {s.favorites_dir}")
-    backup = scanner_mod.backup_favorites(s)
-    print(f"  backup : {backup} (no list files were modified)")
-    print("Next step: with the radio connected, run 'sds100 detect' and share "
-          "the f_list.cfg so push can be finalized safely.")
+             f"{s.index_path}; is this an SDS100/BCDx36HP card?")
+    name = args.name or os.path.splitext(os.path.basename(args.file))[0]
+    _, entries = s.read_index()
+    existing = any(e.name.lower() == name.lower() for e in entries)
+    action = ("overwrite existing list" if existing
+              else "add new list (appends an f_list.cfg entry)")
+    print(f"push {args.file!r} -> scanner list {name!r}: {action}")
+    if not args.yes:
+        _die("re-run with --yes to proceed (a .bak of favorites_lists is made "
+             "first).")
+    res = scanner_mod.push(s, fav, name, backup=not args.no_backup)
+    verb = "overwrote" if res.replaced else "added"
+    print(f"{verb} {res.name!r} -> {res.filename}")
+    if res.backup:
+        print(f"backup: {res.backup}")
+    print("Eject the card / exit Mass Storage mode and power-cycle the radio "
+          "to load the change.")
 
 
 # ---------------------------------------------------------------------- parser
@@ -527,9 +554,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_pull)
 
     sp = sub.add_parser("push",
-                        help="write a .hpe onto the scanner card (experimental)")
+                        help="write a .hpe onto the scanner card")
     sp.add_argument("file", help="path to a .hpe file")
+    sp.add_argument("-n", "--name", help="favorites-list name on the scanner "
+                    "(default: the .hpe filename)")
     sp.add_argument("--mount", help="scanner volume path (default: auto)")
+    sp.add_argument("--no-backup", action="store_true",
+                    help="do not back up favorites_lists first")
     sp.add_argument("--yes", action="store_true", help="skip confirmation")
     sp.set_defaults(func=cmd_push)
 

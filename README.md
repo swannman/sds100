@@ -83,20 +83,30 @@ sds100 encode in.txt out.hpe       # raw text -> .hpe
 
 ## Scanner (USB)
 
-Connect the SDS100, choose **Mass Storage** on the radio so its microSD mounts,
-then:
+Connect the SDS100 and put it in **Mass Storage** mode (plug in USB, press `E`
+at the on-screen prompt — do it while the scanner is squelched), or pop the
+microSD into a card reader. Then:
 
 ```sh
 sds100 detect                      # find the scanner, list its favorites
 sds100 pull [NAME] [-o out.hpe]    # copy a list off the card to a .hpe
-sds100 push FILE                   # write a list to the card  (see below)
+sds100 push FILE [-n "List Name"]  # write a .hpe onto the card (needs --yes)
 ```
 
-`detect` and `pull` are read-only and safe. **`push` is not yet enabled**: the
-on-card `f_list.cfg` index format must be confirmed against a physical scanner
-before writing, to avoid corrupting the list menu. Running `push` makes a
-backup of the card's `FavoriteLists` folder and explains the next step. Once
-you connect the radio and share an `f_list.cfg`, push can be finalized.
+`detect`/`pull` are read-only. `push` writes a list to the card:
+
+* If a list with that **name** already exists, only its `.hpd` is overwritten —
+  the `f_list.cfg` index is left untouched (safest).
+* Otherwise a new `f_NNNNNN.hpd` is created and one index line is appended.
+
+`push` requires `--yes` and backs up `favorites_lists` to a `.bak` folder on the
+card first (skip with `--no-backup`). The list name defaults to the `.hpe`
+filename; override with `-n`. After pushing, eject the card / exit Mass Storage
+mode and power-cycle the radio to load the change.
+
+> The SDS100's USB also has a **serial / PC-control** mode (live remote control
+> and monitoring) that does *not* expose the SD card. Only Mass Storage mode
+> mounts the card, which is what these commands use.
 
 ## Development
 

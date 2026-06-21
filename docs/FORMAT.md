@@ -114,20 +114,32 @@ From `pf_PresetServiceType` in the binary:
 
 ## On the scanner's microSD card
 
-In Mass Storage mode the card mounts as a normal volume. Sentinel identifies a
-scanner by a top-level `BCDx36HP` folder. Favorites live at:
+Mount the card via Mass Storage mode (connect USB, press **E**) or a card
+reader. The card has a top-level `BCDx36HP` folder. Favorites live at:
 
 ```
-<volume>/BCDx36HP/FavoriteLists/f_list.cfg     index of lists
-<volume>/BCDx36HP/FavoriteLists/*.hpd          one plain-text list per file
-<volume>/BCDx36HP/ActivityLog/                 logs
+<volume>/BCDx36HP/favorites_lists/f_list.cfg       index of lists
+<volume>/BCDx36HP/favorites_lists/f_NNNNNN.hpd      one plain-text list per file
+<volume>/BCDx36HP/HPDB/                              full RadioReference database
+<volume>/BCDx36HP/{profile.cfg,app_data.cfg,scanner.inf,...}
 ```
 
 The `.hpd` files use the **same tab-delimited record text** as the inner `.hpe`
-text, but stored **plain** (not gzip/scrambled). New list filenames are
-allocated by scanning existing `<n>_<name>.hpd` names for the next free number.
+text, but stored **plain** (not gzip/scrambled) with **CRLF** endings and
+**no** `File` signature line. List files are named `f_%06d.hpd`.
 
-**Not yet confirmed** (needs a physical device): the exact line format of
-`f_list.cfg` (which maps lists to quick keys / enable flags) and whether `.hpd`
-files carry the `File` signature line. Until then, writing to the card is held
-back to avoid corrupting the scanner's list menu.
+`f_list.cfg` is the index. After the usual `TargetModel`/`FormatVersion`
+header, one line per list:
+
+```
+F-List <display name> <f_NNNNNN.hpd> <flag> ×115
+```
+
+The 115 flags are the list's quick-key assignments (`On`/`Off`). Replacing an
+existing list only rewrites its `.hpd` (the index already points at it);
+adding a new list appends one `F-List` line.
+
+*Confirmed against a physical SDS100 (main firmware 1.21.00): every on-card
+`.hpd` round-trips byte-identically through the model.* Note the USB also
+offers a **serial / PC-control** mode (a CDC port speaking the remote-control
+protocol) which does **not** expose the SD card — only Mass Storage mode does.
