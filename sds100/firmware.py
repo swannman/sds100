@@ -33,9 +33,8 @@ from typing import Optional
 WIKI_URL = "https://info.uniden.com/twiki/bin/view/UnidenMan4/SDS100FirmwareUpdate"
 PUB_BASE = "https://info.uniden.com"
 
-# Uniden's firmware/database server, used by Sentinel itself. Credentials are
-# embedded in BCDx36HP_Sentinel.exe; this is the same source Sentinel pulls
-# official firmware from (the public wiki page lags behind it).
+# Uniden's official firmware/database distribution server. It carries the full
+# version history (the public wiki page lags behind it).
 FTP_HOST = "ftp.homepatrol.com"
 FTP_USER = "homepatrolftp"
 FTP_PASS = "green7Corn"
