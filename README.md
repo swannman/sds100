@@ -115,11 +115,19 @@ the card's `firmware/` folder and the scanner flashes itself on the next
 power-up. These commands stage it safely (the scanner does the actual flash):
 
 ```sh
-sds100 fw-status                   # installed version + newer versions available
-sds100 fw-list                     # downloadable firmware on the Uniden wiki
-sds100 fw-fetch 1.23.20            # download a firmware zip from Uniden
-sds100 fw-install FW.zip --yes     # stage a .zip (or .bin) onto the card
+sds100 fw-status                   # installed vs. latest (main + sub)
+sds100 fw-update --yes             # download the latest main+sub and stage it
+sds100 fw-list                     # firmware zips on the Uniden wiki
+sds100 fw-fetch 1.23.20            # download a wiki firmware zip
+sds100 fw-install FW.zip --yes     # stage a local .zip/.bin/.firm onto the card
 ```
+
+`fw-update` and `fw-status` pull from Uniden's own firmware server
+(`ftp.homepatrol.com`, the same source Sentinel uses), so they see the latest
+builds even when the public wiki lags. The SDS100 has **two** processors with
+separate firmware — main (`SDS-100_V*.bin`) and sub/DSP
+(`SDS-100-SUB_V*.firm`) — and `fw-update` stages both by default (`--no-sub`,
+`--main VER`, `--sub VER` to control).
 
 `fw-install` enforces the safety rules from Uniden's update Readme:
 

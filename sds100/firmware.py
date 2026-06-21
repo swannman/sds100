@@ -20,6 +20,7 @@ performs the actual update. Always keep the backup it makes.
 
 from __future__ import annotations
 
+import ftplib
 import os
 import re
 import shutil
@@ -31,6 +32,87 @@ from typing import Optional
 
 WIKI_URL = "https://info.uniden.com/twiki/bin/view/UnidenMan4/SDS100FirmwareUpdate"
 PUB_BASE = "https://info.uniden.com"
+
+# Uniden's firmware/database server, used by Sentinel itself. Credentials are
+# embedded in BCDx36HP_Sentinel.exe; this is the same source Sentinel pulls
+# official firmware from (the public wiki page lags behind it).
+FTP_HOST = "ftp.homepatrol.com"
+FTP_USER = "homepatrolftp"
+FTP_PASS = "green7Corn"
+FTP_DIR = "/BCDx36HP"
+
+# Per-model firmware naming on the server. The leading anchor keeps SDS100 from
+# matching SDS100E / USDS100 / SDS200 / SDS150, which are different radios.
+MODEL_PATTERNS = {
+    "SDS100": (r"^SDS-100_V([\d_]+)\.bin$", r"^SDS-100-SUB_V([\d_]+)\.firm$"),
+    "SDS200": (r"^SDS200_V([\d_]+)\.bin$", r"^SDS200-SUB_V([\d_]+)\.firm$"),
+    "BCD436HP": (r"^BCD436HP_V([\d_]+)\.bin$", None),
+    "BCD536HP": (r"^BCD536HP_V([\d_]+)\.bin$", None),
+}
+
+
+def _ver_key(v: str):
+    return tuple(int(x) for x in v.replace("_", ".").split("."))
+
+
+@dataclass
+class FtpFirmware:
+    filename: str
+    kind: str        # 'main' or 'sub'
+    version: str     # dotted
+
+
+def ftp_list_firmware(model: str) -> dict[str, list[FtpFirmware]]:
+    """List main/sub firmware available on Uniden's server for ``model``."""
+    pats = MODEL_PATTERNS.get(model.upper())
+    if not pats:
+        raise ValueError(f"unknown model {model!r} for firmware lookup")
+    main_re = re.compile(pats[0])
+    sub_re = re.compile(pats[1]) if pats[1] else None
+    with ftplib.FTP(FTP_HOST, timeout=30) as f:
+        f.login(FTP_USER, FTP_PASS)
+        f.cwd(FTP_DIR)
+        names = f.nlst()
+    out = {"main": [], "sub": []}
+    for n in names:
+        base = os.path.basename(n)
+        m = main_re.match(base)
+        if m:
+            out["main"].append(FtpFirmware(base, "main", m.group(1).replace("_", ".")))
+            continue
+        if sub_re:
+            m = sub_re.match(base)
+            if m:
+                out["sub"].append(FtpFirmware(base, "sub", m.group(1).replace("_", ".")))
+    out["main"].sort(key=lambda x: _ver_key(x.version))
+    out["sub"].sort(key=lambda x: _ver_key(x.version))
+    return out
+
+
+def ftp_latest(model: str) -> dict[str, Optional[FtpFirmware]]:
+    avail = ftp_list_firmware(model)
+    return {"main": avail["main"][-1] if avail["main"] else None,
+            "sub": avail["sub"][-1] if avail["sub"] else None}
+
+
+def ftp_download(filename: str, dest: str) -> str:
+    with ftplib.FTP(FTP_HOST, timeout=60) as f:
+        f.login(FTP_USER, FTP_PASS)
+        f.cwd(FTP_DIR)
+        with open(dest, "wb") as fh:
+            f.retrbinary(f"RETR {filename}", fh.write)
+    return dest
+
+
+def ftp_load_image(filename: str, kind: str, model: str,
+                   version: str) -> "FirmwareImage":
+    """Download a single firmware file from the server into a FirmwareImage."""
+    with ftplib.FTP(FTP_HOST, timeout=60) as f:
+        f.login(FTP_USER, FTP_PASS)
+        f.cwd(FTP_DIR)
+        chunks = []
+        f.retrbinary(f"RETR {filename}", chunks.append)
+    return FirmwareImage(filename, b"".join(chunks), kind, model, version)
 # Firmware binaries carry these extensions; everything else in firmware/ (the
 # .dat lookup tables) is left untouched.
 FIRMWARE_EXTS = (".bin", ".firm")
@@ -117,13 +199,27 @@ def download(url: str, dest: str) -> str:
 
 
 # --------------------------------------------------------------- firmware source
+# The SDS100 has two processors with separate firmware:
+#   main CPU -> SDS-100_V<ver>.bin
+#   sub/DSP  -> SDS-100-SUB_V<ver>.firm
+# A combined zip carries one of each; the firmware/ folder may hold one main
+# and one sub at a time (never two of either).
+def _kind(filename: str) -> Optional[str]:
+    low = filename.lower()
+    if low.endswith(".firm"):
+        return "sub"
+    if low.endswith(".bin"):
+        return "sub" if "sub" in low else "main"
+    return None
+
+
 @dataclass
 class FirmwareImage:
-    bin_name: str          # filename to write into firmware/
+    name: str              # filename to write into firmware/
     data: bytes
+    kind: str              # 'main' or 'sub'
     model: Optional[str]   # model from the readme, if known
     version: Optional[str]
-    readme: Optional[str]
 
 
 def _model_from_text(text: str) -> Optional[str]:
@@ -131,36 +227,47 @@ def _model_from_text(text: str) -> Optional[str]:
     return m.group(1).upper() if m else None
 
 
-def load_image(path: str) -> FirmwareImage:
-    """Load a firmware image from a Uniden ``.zip`` or a bare ``.bin``."""
+def _version_of(name: str) -> Optional[str]:
+    m = re.search(r"(\d+[._]\d+[._]\d+)", os.path.basename(name))
+    return m.group(1).replace("_", ".") if m else None
+
+
+def load_images(path: str) -> list[FirmwareImage]:
+    """Load firmware image(s) from a Uniden ``.zip`` (main and/or sub) or a
+    bare ``.bin``/``.firm``. Returns at most one main and one sub image."""
+    images: list[FirmwareImage] = []
     if path.lower().endswith(".zip"):
         with zipfile.ZipFile(path) as z:
             names = z.namelist()
-            bins = [n for n in names if n.lower().endswith(".bin")]
-            if len(bins) != 1:
-                raise ValueError(
-                    f"expected exactly one .bin in {os.path.basename(path)}, "
-                    f"found {len(bins)}")
-            readme = None
+            model = None
             for n in names:
                 if n.lower().endswith(".txt"):
-                    readme = z.read(n).decode("utf-8", "replace")
-                    break
-            data = z.read(bins[0])
-            model = _model_from_text(readme or "")
-            ver = re.search(r"(\d+[._]\d+[._]\d+)", os.path.basename(bins[0]))
-            return FirmwareImage(os.path.basename(bins[0]), data, model,
-                                 ver.group(1).replace("_", ".") if ver else None,
-                                 readme)
-    elif path.lower().endswith(".bin"):
+                    model = _model_from_text(z.read(n).decode("utf-8", "replace"))
+                    if model:
+                        break
+            for n in names:
+                k = _kind(n)
+                if k:
+                    images.append(FirmwareImage(os.path.basename(n), z.read(n),
+                                                k, model, _version_of(n)))
+    elif path.lower().endswith((".bin", ".firm")):
         with open(path, "rb") as fh:
             data = fh.read()
         base = os.path.basename(path)
+        k = _kind(base) or "main"
         model = "SDS100" if re.search(r"sds[\-_ ]?100", base, re.I) else None
-        ver = re.search(r"(\d+[._]\d+[._]\d+)", base)
-        return FirmwareImage(base, data, model,
-                             ver.group(1).replace("_", ".") if ver else None, None)
-    raise ValueError("firmware source must be a .zip or .bin")
+        images.append(FirmwareImage(base, data, k, model, _version_of(base)))
+    else:
+        raise ValueError("firmware source must be a .zip, .bin, or .firm")
+
+    if not images:
+        raise ValueError(f"no firmware (.bin/.firm) found in {os.path.basename(path)}")
+    kinds = [i.kind for i in images]
+    for k in ("main", "sub"):
+        if kinds.count(k) > 1:
+            raise ValueError(f"{os.path.basename(path)} contains multiple {k} "
+                             "firmware files; expected at most one of each")
+    return images
 
 
 # ------------------------------------------------------------------- staging
@@ -176,13 +283,15 @@ def backup_firmware_dir(card_root: str) -> str:
 
 @dataclass
 class StageResult:
-    bin_name: str
+    written: list[str]
     cleared: list[str]
     backup: str
 
 
-def stage(card_root: str, image: FirmwareImage, *, backup: bool = True) -> StageResult:
-    """Write ``image`` into firmware/, clearing any prior firmware binary.
+def stage(card_root: str, images: list[FirmwareImage], *,
+          backup: bool = True) -> StageResult:
+    """Write firmware ``images`` (main and/or sub) into firmware/, clearing any
+    prior firmware first (the single-version rule). The .dat tables are kept.
 
     Caller is responsible for model-match and confirmation checks.
     """
@@ -191,9 +300,33 @@ def stage(card_root: str, image: FirmwareImage, *, backup: bool = True) -> Stage
         raise ValueError(f"no firmware/ folder on card at {d}")
     bak = backup_firmware_dir(card_root) if backup else ""
     cleared = []
-    for f in staged_firmware(card_root):     # enforce single-version rule
+    for f in staged_firmware(card_root):     # remove any prior main/sub binaries
         os.remove(os.path.join(d, f))
         cleared.append(f)
-    with open(os.path.join(d, image.bin_name), "wb") as fh:
-        fh.write(image.data)
-    return StageResult(image.bin_name, cleared, bak)
+    written = []
+    for img in images:
+        path = os.path.join(d, img.name)
+        with open(path, "wb") as fh:
+            fh.write(img.data)
+        _strip_macos_metadata(path)
+        written.append(img.name)
+    # Remove any AppleDouble sidecars in the folder -- the scanner could mistake
+    # a ._SDS-100_*.bin for a second firmware file and refuse to update.
+    for f in os.listdir(d):
+        if f.startswith("._") or f == ".DS_Store":
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+    return StageResult(written, cleared, bak)
+
+
+def _strip_macos_metadata(path: str) -> None:
+    """Clear extended attributes so macOS doesn't write a ._ AppleDouble file
+    for this firmware when the card is ejected. Best-effort, macOS only."""
+    import subprocess
+    try:
+        subprocess.run(["xattr", "-c", path], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, OSError):
+        pass

@@ -163,32 +163,34 @@ def test_fw_installed_info(tmp_path):
     assert info["sub"] == "1.02.01"
 
 
-def test_fw_stage_preserves_dat_and_single_version(tmp_path):
+def test_fw_stage_main_and_sub_preserves_dat(tmp_path):
     root = _fake_fw_card(tmp_path)
-    # an old firmware bin is already staged
     fwd = os.path.join(root, "firmware")
-    open(os.path.join(fwd, "SDS-100_V1_22_00.bin"), "wb").write(b"old")
-    img = fw_mod.FirmwareImage("SDS-100_V1_23_20.bin", b"newfirmware",
-                               "SDS100", "1.23.20", "Model: UNIDEN SDS100")
-    res = fw_mod.stage(root, img, backup=False)
+    open(os.path.join(fwd, "SDS-100_V1_22_00.bin"), "wb").write(b"old")  # prior main
+    images = [
+        fw_mod.FirmwareImage("SDS-100_V1_26_01.bin", b"main", "main", "SDS100", "1.26.01"),
+        fw_mod.FirmwareImage("SDS-100-SUB_V1_03_15.firm", b"sub", "sub", "SDS100", "1.03.15"),
+    ]
+    res = fw_mod.stage(root, images, backup=False)
     files = set(os.listdir(fwd))
-    assert "SDS-100_V1_23_20.bin" in files            # new staged
-    assert "SDS-100_V1_22_00.bin" not in files        # old cleared
+    assert {"SDS-100_V1_26_01.bin", "SDS-100-SUB_V1_03_15.firm"} <= files  # both staged
+    assert "SDS-100_V1_22_00.bin" not in files                            # old cleared
     assert "SDS-100_V1_22_00.bin" in res.cleared
-    assert {"CityTable_V1_00_00.dat", "ZipTable_V1_00_00.dat"} <= files  # .dat kept
+    assert {"CityTable_V1_00_00.dat", "ZipTable_V1_00_00.dat"} <= files    # .dat kept
 
 
-def test_fw_load_image_from_zip(tmp_path):
+def test_fw_load_images_combined_zip(tmp_path):
     import zipfile
-    z = tmp_path / "SDS100_V1_23_20_Main.zip"
+    z = tmp_path / "SDS100_V1_23_15_Main_Sub.zip"
     with zipfile.ZipFile(z, "w") as zf:
-        zf.writestr("SDS100 V1.23.20 Main/Readme.txt", "Model: UNIDEN SDS100\n")
-        zf.writestr("SDS100 V1.23.20 Main/SDS-100_V1_23_20.bin", b"\x91\xf0binary")
-    img = fw_mod.load_image(str(z))
-    assert img.bin_name == "SDS-100_V1_23_20.bin"
-    assert img.model == "SDS100"
-    assert img.version == "1.23.20"
-    assert img.data == b"\x91\xf0binary"
+        zf.writestr("SDS100 V1.23.15/Readme.txt", "Model: UNIDEN SDS100\n")
+        zf.writestr("SDS100 V1.23.15/SDS-100_V1_23_15.bin", b"\x91\xf0main")
+        zf.writestr("SDS100 V1.23.15/SDS-100-SUB_V1_03_06.firm", b"sub")
+    images = fw_mod.load_images(str(z))
+    by = {i.kind: i for i in images}
+    assert by["main"].name == "SDS-100_V1_23_15.bin" and by["main"].version == "1.23.15"
+    assert by["sub"].name == "SDS-100-SUB_V1_03_06.firm" and by["sub"].version == "1.03.06"
+    assert all(i.model == "SDS100" for i in images)
 
 
 def test_push_new_appends_index(tmp_path):
