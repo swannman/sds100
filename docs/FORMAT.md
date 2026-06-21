@@ -1,29 +1,22 @@
 # The Sentinel `.hpe` favorites-export format
 
-Reverse-engineered from `BCDx36HP_Sentinel.exe` (Uniden Sentinel for
-BCDx36HP / SDS100 / SDS200), version 3.00.01, and validated against real
-exported lists. This documents the on-disk format so the codec can be trusted.
+Determined by analysis of real `.hpe` export files (BCDx36HP / SDS100 /
+SDS200) and the scanner's on-card list files, and validated by byte-for-byte
+round trips. This documents the on-disk format so the codec can be trusted.
 
 ## File framing
 
-A `.hpe` file is produced by (class `HomePatrolExportFile`):
+A `.hpe` file is, end to end:
 
 ```
-write:  FavoriteRoot.Save(text)              # tab-delimited records
-        FileLib.AppendSignature(...)         # append the signature line
-        GzCompression.Compress(...)          # gzip
-        scramble(...)                        # XOR every byte with 0x0C
-read:   the same steps in reverse (unscramble = scramble; it is self-inverse)
+hpe_bytes = scramble( gzip( inner_text + signature ) )
 ```
 
-So, concretely:
-
-```
-hpe_bytes = XOR_0x0C( gzip( inner_text ) )
-```
+reading is the same steps in reverse (unscramble = scramble; it is
+self-inverse). Concretely:
 
 * **Scramble**: XOR each byte with `0x0C`. Self-inverse.
-* **gzip**: standard RFC-1952; Sentinel writes the header with `mtime=0`.
+* **gzip**: standard RFC-1952; the header is written with `mtime=0`.
 * **inner_text**: UTF-8, **CRLF** line endings, ending with the signature line
   `File\tHomePatrol Export File\r\n`.
 
@@ -97,9 +90,9 @@ Field 7 of C-Freq (and the analogous field elsewhere) is a tagged string:
 * DMR/NXDN — `ColorCode=<n>`, `RAN=<n>`, `Area=<n>`, `CommonId=<n>`
 * empty — no tone
 
-### Service types (`FuncTag` ids)
+### Service types (ids)
 
-From `pf_PresetServiceType` in the binary:
+The numeric service-type id used by channel/talkgroup records:
 
 ```
  1 Multi-Dispatch   2 Law Dispatch    3 Fire Dispatch    4 EMS Dispatch

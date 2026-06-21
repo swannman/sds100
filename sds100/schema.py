@@ -24,8 +24,7 @@ according to a small grammar:
 Field indices below are 0-based into the *full* tab-split list, so index 0 is
 always the tag itself.  Only the human-meaningful columns are named; every
 other column is preserved verbatim on round-trip.  Indices were derived
-empirically from real export files and cross-checked against the field names
-emitted by ``BCDx36HP_Sentinel.exe``.
+empirically from real export files and the scanner's on-card list files.
 """
 
 from __future__ import annotations
@@ -102,7 +101,7 @@ TEMPLATES = {
 }
 
 
-# Service-type ("FuncTag") id -> name, from pf_PresetServiceType in the binary.
+# Service-type id -> name, as used in the channel/talkgroup records.
 # Field 8 of C-Freq and field 7 of TGID hold the numeric id.  Id 21 ("Other")
 # is the neutral default for hand-added entries.
 SERVICE_TYPES = {

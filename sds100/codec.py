@@ -11,8 +11,8 @@ own inverse), the gzip stream is a standard RFC-1952 member, and the trailing
 This module deals only with the byte-level framing.  The structured record
 text it produces/consumes is handled by :mod:`sds100.model`.
 
-Reverse-engineered from ``BCDx36HP_Sentinel.exe`` (HomePatrolExportFile /
-GzCompression / FileLib classes), Sentinel version 3.00.01.
+The framing was determined by analysis of ``.hpe`` export files; round trips
+are verified byte-for-byte against real lists.
 """
 
 from __future__ import annotations

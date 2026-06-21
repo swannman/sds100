@@ -10,8 +10,8 @@ of round-tripping through a spreadsheet — and writes valid `.hpe` files that
 import back into Sentinel.
 
 > Format note: `.hpe` files are `XOR-0x0C( gzip( tab-delimited text ) )` with a
-> trailing `File\tHomePatrol Export File` signature. The codec was
-> reverse-engineered from `BCDx36HP_Sentinel.exe` v3.00.01; every column not
+> trailing `File\tHomePatrol Export File` signature. The format was determined
+> by analysis of real export files and the scanner's SD card; every column not
 > explicitly understood is preserved byte-for-byte on round-trip. See
 > [docs/FORMAT.md](docs/FORMAT.md).
 
