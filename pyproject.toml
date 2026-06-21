@@ -1,0 +1,16 @@
+[project]
+name = "sds100"
+version = "0.1.0"
+description = "CLI for Uniden SDS100 / BCDx36HP Sentinel .hpe favorites lists on macOS/Linux"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+sds100 = "sds100.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sds100"]

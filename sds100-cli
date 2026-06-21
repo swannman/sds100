@@ -1,0 +1,5 @@
+#!/bin/sh
+# Zero-install launcher: run the CLI straight from the source tree.
+# Usage:  ./sds100-cli <command> ...     (or symlink onto your PATH)
+here=$(cd "$(dirname "$0")" && pwd)
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m sds100 "$@"
