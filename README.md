@@ -108,6 +108,33 @@ mode and power-cycle the radio to load the change.
 > and monitoring) that does *not* expose the SD card. Only Mass Storage mode
 > mounts the card, which is what these commands use.
 
+## Firmware
+
+SDS100 firmware updates are file-based: a single encrypted `.bin` is staged in
+the card's `firmware/` folder and the scanner flashes itself on the next
+power-up. These commands stage it safely (the scanner does the actual flash):
+
+```sh
+sds100 fw-status                   # installed version + newer versions available
+sds100 fw-list                     # downloadable firmware on the Uniden wiki
+sds100 fw-fetch 1.23.20            # download a firmware zip from Uniden
+sds100 fw-install FW.zip --yes     # stage a .zip (or .bin) onto the card
+```
+
+`fw-install` enforces the safety rules from Uniden's update Readme:
+
+* the firmware **model must match** the scanner (refuses an SDS200 image on an
+  SDS100 unless `--force`);
+* only **one** firmware version is kept on the card (any prior staged binary is
+  cleared);
+* the `CityTable`/`ZipTable` `.dat` files are **never** touched (the scanner
+  won't boot without them);
+* a backup of `firmware/` is made first.
+
+After staging: charge the battery, **eject** the card, then **press & hold the
+power key** on the SDS100 to start the update — don't interrupt it. Newer
+releases may only be available through Uniden's Sentinel rather than the wiki.
+
 ## Development
 
 ```sh

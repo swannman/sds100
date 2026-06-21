@@ -19,7 +19,7 @@ from typing import Optional
 
 import os
 
-from . import codec, schema, scanner as scanner_mod
+from . import codec, schema, firmware as fw_mod, scanner as scanner_mod
 from .format import hz_to_mhz, mhz_to_hz, table
 from .model import FavoritesList, Record
 
@@ -443,6 +443,99 @@ def cmd_push(args):
           "to load the change.")
 
 
+# ------------------------------------------------------------------- firmware
+def _ver_tuple(v):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return ()
+
+
+def cmd_fw_status(args):
+    s = scanner_mod.require_one(mount=args.mount)
+    info = fw_mod.installed_info(s.root)
+    staged = fw_mod.staged_firmware(s.root)
+    print(f"scanner   : {info['model']}")
+    print(f"firmware  : main {info['main']}, sub {info['sub']}")
+    print(f"staged    : {', '.join(staged) if staged else '(none pending)'}")
+    try:
+        rels = [r for r in fw_mod.list_available() if r.is_main]
+        newer = sorted((r for r in rels
+                        if _ver_tuple(r.version) > _ver_tuple(info['main'])),
+                       key=lambda r: _ver_tuple(r.version))
+        if newer:
+            print(f"available : newer main firmware -> "
+                  + ", ".join(r.version for r in newer))
+        else:
+            print("available : up to date with the Uniden wiki downloads")
+    except Exception as e:
+        print(f"available : (couldn't check wiki: {e})")
+
+
+def cmd_fw_list(args):
+    rels = fw_mod.list_available()
+    rows = [[r.version, "main" if r.is_main else "sub", r.name] for r in rels]
+    print(table(rows, ["Version", "Type", "Name"]))
+    print("\nNote: the newest releases may be Sentinel-only; this lists the "
+          "wiki's public downloads.")
+
+
+def cmd_fw_fetch(args):
+    target = args.version
+    if target.startswith("http"):
+        url, name = target, os.path.basename(target)
+    else:
+        rels = [r for r in fw_mod.list_available()
+                if r.version == target or target.lower() in r.name.lower()]
+        if not rels:
+            _die(f"no firmware matching {target!r}; try 'sds100 fw-list'")
+        if len(rels) > 1:
+            _die("ambiguous; matches: " + ", ".join(r.name for r in rels))
+        url, name = rels[0].url, rels[0].name + ".zip"
+    dest = args.output or name
+    print(f"downloading {url}")
+    fw_mod.download(url, dest)
+    print(f"saved {dest} ({os.path.getsize(dest)} bytes)")
+
+
+def cmd_fw_install(args):
+    s = scanner_mod.require_one(mount=args.mount)
+    info = fw_mod.installed_info(s.root)
+    image = fw_mod.load_image(args.file)
+
+    # model-match guard
+    card_model = info["model"].upper()
+    if image.model and card_model not in ("?", "") and image.model != card_model:
+        _die(f"firmware model {image.model!r} != scanner {card_model!r}. "
+             "Refusing (use --force to override only if you are certain).")
+    if not image.model and not args.force:
+        _die("couldn't confirm the firmware's model from the file; pass a "
+             "Uniden .zip (preferred) or --force a bare .bin you trust.")
+
+    print(f"scanner   : {card_model}  (main {info['main']})")
+    print(f"firmware  : {image.bin_name}"
+          + (f"  (v{image.version})" if image.version else "")
+          + (f"  model {image.model}" if image.model else ""))
+    staged = fw_mod.staged_firmware(s.root)
+    if staged:
+        print(f"will clear existing staged firmware: {', '.join(staged)}")
+    print("note: City/Zip .dat tables are preserved; a backup is made.")
+    if not args.yes:
+        _die("re-run with --yes to stage this firmware onto the card.")
+
+    res = fw_mod.stage(s.root, image, backup=not args.no_backup)
+    print(f"\nstaged {res.bin_name} into {fw_mod.firmware_dir(s.root)}")
+    if res.cleared:
+        print(f"cleared: {', '.join(res.cleared)}")
+    if res.backup:
+        print(f"backup : {res.backup}")
+    print("\nNext, on the radio:")
+    print("  1. Make sure the battery is charged.")
+    print("  2. Eject/unmount the card in Finder (don't just yank USB).")
+    print("  3. On the SDS100, press & hold the power key to start the update.")
+    print("  4. Do NOT interrupt power/USB until it finishes.")
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -563,6 +656,30 @@ def build_parser() -> argparse.ArgumentParser:
                     help="do not back up favorites_lists first")
     sp.add_argument("--yes", action="store_true", help="skip confirmation")
     sp.set_defaults(func=cmd_push)
+
+    # --- firmware ---
+    sp = sub.add_parser("fw-status",
+                        help="show installed firmware + available updates")
+    sp.add_argument("--mount", help="scanner volume path (default: auto)")
+    sp.set_defaults(func=cmd_fw_status)
+
+    sp = sub.add_parser("fw-list", help="list downloadable firmware (Uniden wiki)")
+    sp.set_defaults(func=cmd_fw_list)
+
+    sp = sub.add_parser("fw-fetch", help="download a firmware zip from Uniden")
+    sp.add_argument("version", help="version (e.g. 1.23.20) or a full URL")
+    sp.add_argument("-o", "--output", help="output file (default: zip name)")
+    sp.set_defaults(func=cmd_fw_fetch)
+
+    sp = sub.add_parser("fw-install",
+                        help="stage a firmware .zip/.bin onto the scanner card")
+    sp.add_argument("file", help="Uniden firmware .zip (preferred) or .bin")
+    sp.add_argument("--mount", help="scanner volume path (default: auto)")
+    sp.add_argument("--force", action="store_true",
+                    help="bypass the model-confirmation guard (dangerous)")
+    sp.add_argument("--no-backup", action="store_true")
+    sp.add_argument("--yes", action="store_true", help="confirm staging")
+    sp.set_defaults(func=cmd_fw_install)
 
     return p
 

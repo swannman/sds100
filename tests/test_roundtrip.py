@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from sds100 import codec, schema, scanner as scanner_mod
+from sds100 import codec, schema, firmware as fw_mod, scanner as scanner_mod
 from sds100.format import hz_to_mhz, mhz_to_hz
 from sds100.model import FavoritesList
 
@@ -141,6 +141,54 @@ def test_push_overwrite_leaves_index(tmp_path):
     raw = open(s.hpd_files()[0], encoding="utf-8", newline="").read()
     assert schema.named  # sanity import
     assert "HomePatrol Export File" not in raw
+
+
+def _fake_fw_card(tmp_path):
+    root = tmp_path / "BCDx36HP"
+    (root / "firmware").mkdir(parents=True)
+    (root / "scanner.inf").write_text(
+        "TargetModel\tBCDx36HP\r\nFormatVersion\t1.00\r\n"
+        "Scanner\tSDS100\t38326-X\t1.21.00\t01\t\t1.00.00\t1.00.00\t0\t1.02.01\r\n",
+        newline="")
+    (root / "firmware" / "CityTable_V1_00_00.dat").write_text("START_CITY")
+    (root / "firmware" / "ZipTable_V1_00_00.dat").write_text("START_ZIP")
+    return str(root)
+
+
+def test_fw_installed_info(tmp_path):
+    root = _fake_fw_card(tmp_path)
+    info = fw_mod.installed_info(root)
+    assert info["model"] == "SDS100"
+    assert info["main"] == "1.21.00"
+    assert info["sub"] == "1.02.01"
+
+
+def test_fw_stage_preserves_dat_and_single_version(tmp_path):
+    root = _fake_fw_card(tmp_path)
+    # an old firmware bin is already staged
+    fwd = os.path.join(root, "firmware")
+    open(os.path.join(fwd, "SDS-100_V1_22_00.bin"), "wb").write(b"old")
+    img = fw_mod.FirmwareImage("SDS-100_V1_23_20.bin", b"newfirmware",
+                               "SDS100", "1.23.20", "Model: UNIDEN SDS100")
+    res = fw_mod.stage(root, img, backup=False)
+    files = set(os.listdir(fwd))
+    assert "SDS-100_V1_23_20.bin" in files            # new staged
+    assert "SDS-100_V1_22_00.bin" not in files        # old cleared
+    assert "SDS-100_V1_22_00.bin" in res.cleared
+    assert {"CityTable_V1_00_00.dat", "ZipTable_V1_00_00.dat"} <= files  # .dat kept
+
+
+def test_fw_load_image_from_zip(tmp_path):
+    import zipfile
+    z = tmp_path / "SDS100_V1_23_20_Main.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("SDS100 V1.23.20 Main/Readme.txt", "Model: UNIDEN SDS100\n")
+        zf.writestr("SDS100 V1.23.20 Main/SDS-100_V1_23_20.bin", b"\x91\xf0binary")
+    img = fw_mod.load_image(str(z))
+    assert img.bin_name == "SDS-100_V1_23_20.bin"
+    assert img.model == "SDS100"
+    assert img.version == "1.23.20"
+    assert img.data == b"\x91\xf0binary"
 
 
 def test_push_new_appends_index(tmp_path):
